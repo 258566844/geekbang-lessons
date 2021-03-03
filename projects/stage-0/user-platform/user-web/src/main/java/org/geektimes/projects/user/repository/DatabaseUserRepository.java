@@ -8,7 +8,9 @@ import java.beans.BeanInfo;
 import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
 import java.lang.reflect.Method;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.*;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -19,6 +21,8 @@ import static org.apache.commons.lang.ClassUtils.wrapperToPrimitive;
 public class DatabaseUserRepository implements UserRepository {
 
     private static Logger logger = Logger.getLogger(DatabaseUserRepository.class.getName());
+
+    public static DatabaseUserRepository userRepository=null;
 
     /**
      * 通用处理方式
@@ -43,7 +47,9 @@ public class DatabaseUserRepository implements UserRepository {
 
     @Override
     public boolean save(User user) {
-        return false;
+        return executeUpdate(INSERT_USER_DML_SQL, num -> {
+            return num > 0;
+        }, COMMON_EXCEPTION_HANDLER, user.getName(), user.getPassword(), user.getEmail(), user.getPhoneNumber());
     }
 
     @Override
@@ -65,9 +71,32 @@ public class DatabaseUserRepository implements UserRepository {
     public User getByNameAndPassword(String userName, String password) {
         return executeQuery("SELECT id,name,password,email,phoneNumber FROM users WHERE name=? and password=?",
                 resultSet -> {
-                    // TODO
-                    return new User();
+                    BeanInfo userBeanInfo = Introspector.getBeanInfo(User.class, Object.class);
+                    User user = new User();
+                    if (resultSet.next()) {
+                        getUserFromResultSet(user, userBeanInfo, resultSet);
+                    }
+                    return user;
                 }, COMMON_EXCEPTION_HANDLER, userName, password);
+    }
+
+    private void getUserFromResultSet(User user, BeanInfo userBeanInfo, ResultSet resultSet) throws Exception {
+        for (PropertyDescriptor propertyDescriptor : userBeanInfo.getPropertyDescriptors()) {
+            String fieldName = propertyDescriptor.getName();
+            Class fieldType = propertyDescriptor.getPropertyType();
+            String methodName = resultSetMethodMappings.get(fieldType);
+            // 可能存在映射关系（不过此处是相等的）
+            String columnLabel = mapColumnLabel(fieldName);
+            Method resultSetMethod = ResultSet.class.getMethod(methodName, String.class);
+            // 通过放射调用 getXXX(String) 方法
+            Object resultValue = resultSetMethod.invoke(resultSet, columnLabel);
+            // 获取 User 类 Setter方法
+            // PropertyDescriptor ReadMethod 等于 Getter 方法
+            // PropertyDescriptor WriteMethod 等于 Setter 方法
+            Method setterMethodFromUser = propertyDescriptor.getWriteMethod();
+            // 以 id 为例，  user.setId(resultSet.getLong("id"));
+            setterMethodFromUser.invoke(user, resultValue);
+        }
     }
 
     @Override
@@ -78,22 +107,8 @@ public class DatabaseUserRepository implements UserRepository {
             List<User> users = new ArrayList<>();
             while (resultSet.next()) { // 如果存在并且游标滚动 // SQLException
                 User user = new User();
-                for (PropertyDescriptor propertyDescriptor : userBeanInfo.getPropertyDescriptors()) {
-                    String fieldName = propertyDescriptor.getName();
-                    Class fieldType = propertyDescriptor.getPropertyType();
-                    String methodName = resultSetMethodMappings.get(fieldType);
-                    // 可能存在映射关系（不过此处是相等的）
-                    String columnLabel = mapColumnLabel(fieldName);
-                    Method resultSetMethod = ResultSet.class.getMethod(methodName, String.class);
-                    // 通过放射调用 getXXX(String) 方法
-                    Object resultValue = resultSetMethod.invoke(resultSet, columnLabel);
-                    // 获取 User 类 Setter方法
-                    // PropertyDescriptor ReadMethod 等于 Getter 方法
-                    // PropertyDescriptor WriteMethod 等于 Setter 方法
-                    Method setterMethodFromUser = propertyDescriptor.getWriteMethod();
-                    // 以 id 为例，  user.setId(resultSet.getLong("id"));
-                    setterMethodFromUser.invoke(user, resultValue);
-                }
+                getUserFromResultSet(user, userBeanInfo, resultSet);
+                users.add(user);
             }
             return users;
         }, e -> {
@@ -124,8 +139,8 @@ public class DatabaseUserRepository implements UserRepository {
 
                 // Boolean -> boolean
                 String methodName = preparedStatementMethodMappings.get(argType);
-                Method method = PreparedStatement.class.getMethod(methodName, wrapperType);
-                method.invoke(preparedStatement, i + 1, args);
+                Method method = PreparedStatement.class.getMethod(methodName, int.class,wrapperType);
+                method.invoke(preparedStatement, i + 1, arg);
             }
             ResultSet resultSet = preparedStatement.executeQuery();
             // 返回一个 POJO List -> ResultSet -> POJO List
@@ -137,6 +152,40 @@ public class DatabaseUserRepository implements UserRepository {
         return null;
     }
 
+    /**
+     * @param sql
+     * @param function
+     * @param <T>
+     * @return
+     */
+    protected <T> T executeUpdate(String sql, ThrowableFunction<Integer, T> function,
+                                  Consumer<Throwable> exceptionHandler, Object... args) {
+        Connection connection = getConnection();
+        try {
+            PreparedStatement preparedStatement = connection.prepareStatement(sql);
+            for (int i = 0; i < args.length; i++) {
+                Object arg = args[i];
+                Class argType = arg.getClass();
+
+                Class wrapperType = wrapperToPrimitive(argType);
+
+                if (wrapperType == null) {
+                    wrapperType = argType;
+                }
+
+                // Boolean -> boolean
+                String methodName = preparedStatementMethodMappings.get(argType);
+                Method method = PreparedStatement.class.getMethod(methodName,int.class, wrapperType);
+                method.invoke(preparedStatement, i + 1, arg);
+            }
+            int num = preparedStatement.executeUpdate();
+            return function.apply(num);
+        } catch (Throwable e) {
+            e.printStackTrace();
+            exceptionHandler.accept(e);
+        }
+        return null;
+    }
 
     private static String mapColumnLabel(String fieldName) {
         return fieldName;

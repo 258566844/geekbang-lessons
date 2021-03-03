@@ -64,9 +64,9 @@ public class DBConnectionManager {
         Connection connection = DriverManager.getConnection(databaseURL);
 
         Statement statement = connection.createStatement();
-        // 删除 users 表
-        System.out.println(statement.execute(DROP_USERS_TABLE_DDL_SQL)); // false
-        // 创建 users 表
+//        // 删除 users 表
+//        System.out.println(statement.execute(DROP_USERS_TABLE_DDL_SQL)); // false
+//        // 创建 users 表
         System.out.println(statement.execute(CREATE_USERS_TABLE_DDL_SQL)); // false
         System.out.println(statement.executeUpdate(INSERT_USER_DML_SQL));  // 5
 
@@ -153,5 +153,11 @@ public class DBConnectionManager {
     static {
         typeMethodMappings.put(Long.class, "getLong");
         typeMethodMappings.put(String.class, "getString");
+    }
+
+    public void init() throws SQLException {
+        String databaseURL = "jdbc:derby:/db/user-platform;create=true";
+        Connection connection = DriverManager.getConnection(databaseURL);
+        this.connection = connection;
     }
 }
